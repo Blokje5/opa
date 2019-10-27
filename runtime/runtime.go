@@ -22,9 +22,9 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/fsnotify.v1"
 
 	"github.com/open-policy-agent/opa/ast"
+	"github.com/open-policy-agent/opa/internal/file/watcher"
 	"github.com/open-policy-agent/opa/internal/prometheus"
 	"github.com/open-policy-agent/opa/internal/runtime"
 	storedversion "github.com/open-policy-agent/opa/internal/version"
@@ -306,10 +306,12 @@ func (rt *Runtime) Serve(ctx context.Context) error {
 	}
 
 	if rt.Params.Watch {
-		if err := rt.startWatcher(ctx, rt.Params.Paths, onReloadLogger); err != nil {
+		close, err := rt.startWatcher(ctx, rt.Params.Paths, onReloadLogger)
+		if err != nil {
 			logrus.WithField("err", err).Error("Unable to open watch.")
 			return err
 		}
+		defer close()
 	}
 
 	rt.server.Handler = NewLoggingHandler(rt.server.Handler)
@@ -366,10 +368,12 @@ func (rt *Runtime) StartREPL(ctx context.Context) {
 	repl := repl.New(rt.Store, rt.Params.HistoryPath, rt.Params.Output, rt.Params.OutputFormat, rt.Params.ErrorLimit, banner).WithRuntime(rt.info)
 
 	if rt.Params.Watch {
-		if err := rt.startWatcher(ctx, rt.Params.Paths, onReloadPrinter(rt.Params.Output)); err != nil {
+		close, err := rt.startWatcher(ctx, rt.Params.Paths, onReloadPrinter(rt.Params.Output))
+		if err != nil {
 			fmt.Fprintln(rt.Params.Output, "error opening watch:", err)
 			os.Exit(1)
 		}
+		defer close()
 	}
 
 	repl.Loop(ctx)
@@ -399,32 +403,24 @@ func (rt *Runtime) decisionLogger(ctx context.Context, event *server.Info) error
 	return plugin.Log(ctx, event)
 }
 
-func (rt *Runtime) startWatcher(ctx context.Context, paths []string, onReload func(time.Duration, error)) error {
-	watcher, err := getWatcher(paths)
+func (rt *Runtime) startWatcher(ctx context.Context, paths []string, onReload func(time.Duration, error)) (func() error, error) {
+	watchPaths, err := getWatchPaths(paths)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	go rt.readWatcher(ctx, watcher, paths, onReload)
-	return nil
-}
 
-func (rt *Runtime) readWatcher(ctx context.Context, watcher *fsnotify.Watcher, paths []string, onReload func(time.Duration, error)) {
-	for {
-		select {
-		case evt := <-watcher.Events:
-			removalMask := (fsnotify.Remove | fsnotify.Rename)
-			mask := (fsnotify.Create | fsnotify.Write | removalMask)
-			if (evt.Op & mask) != 0 {
-				t0 := time.Now()
-				removed := ""
-				if (evt.Op & removalMask) != 0 {
-					removed = evt.Name
-				}
-				err := rt.processWatcherUpdate(ctx, paths, removed)
-				onReload(time.Since(t0), err)
-			}
-		}
+	processWatcherUpdate := func(ctx context.Context, paths []string, removed string) {
+		t0 := time.Now()
+		err := rt.processWatcherUpdate(ctx, paths, removed)
+		onReload(time.Since(t0), err)
 	}
+
+	close, err := watcher.StartWatcher(ctx, watchPaths, processWatcherUpdate)
+	if err != nil {
+		return nil, err
+	}
+
+	return close, nil
 }
 
 func (rt *Runtime) processWatcherUpdate(ctx context.Context, paths []string, removed string) error {
@@ -572,27 +568,6 @@ func compileAndStoreInputs(ctx context.Context, store storage.Store, txn storage
 	}
 
 	return nil
-}
-
-func getWatcher(rootPaths []string) (*fsnotify.Watcher, error) {
-
-	watchPaths, err := getWatchPaths(rootPaths)
-	if err != nil {
-		return nil, err
-	}
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, path := range watchPaths {
-		if err := watcher.Add(path); err != nil {
-			return nil, err
-		}
-	}
-
-	return watcher, nil
 }
 
 func getWatchPaths(rootPaths []string) ([]string, error) {

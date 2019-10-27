@@ -19,7 +19,6 @@ func StartWatcher(ctx context.Context, paths []string, processWatcherUpdate func
 	return watcher.Close, nil
 }
 
-
 func getWatcher(watchPaths []string) (*fsnotify.Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

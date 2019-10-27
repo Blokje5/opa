@@ -224,9 +224,11 @@ func testRuntimeProcessWatchEvents(t *testing.T, asBundle bool) {
 
 		var buf bytes.Buffer
 
-		if err := rt.startWatcher(ctx, params.Paths, onReloadPrinter(&buf)); err != nil {
+		close, err := rt.startWatcher(ctx, params.Paths, onReloadPrinter(&buf))
+		if err != nil {
 			t.Fatalf("Unexpected watcher init error: %v", err)
 		}
+		defer close()
 
 		expected := map[string]interface{}{
 			"hello": "world-2",
@@ -306,9 +308,11 @@ func testRuntimeProcessWatchEventPolicyError(t *testing.T, asBundle bool) {
 			ch <- err
 		}
 
-		if err := rt.startWatcher(ctx, params.Paths, testFunc); err != nil {
+		close, err := rt.startWatcher(ctx, params.Paths, testFunc)
+		if err != nil {
 			t.Fatalf("Unexpected watcher init error: %v", err)
 		}
+		defer close()
 
 		newModule := []byte(`package test
 
